@@ -143,51 +143,34 @@ $('export-json').onclick=()=>download('gympath-kopia-'+today()+'.json',JSON.stri
 $('import-json').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{const v=validate(JSON.parse(await file.text()));if(!confirm('Zastąpić obecne dane kopią zawierającą '+v.gyms.length+' Gymów?'))return;data=v;save();clearRoute();draw();if(data.start)map.setView([data.start.lat,data.start.lng],14);notice('Zaimportowano kopię JSON.')}catch(e){alert('Błąd importu: '+e.message)}finally{e.target.value=''}};
 const csvCell=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
 $('export-csv').onclick=()=>download('gympath-gymy-'+today()+'.csv','name,lat,lng,popularity,status\n'+data.gyms.map(g=>[g.name,g.lat,g.lng,g.popularity,g.status].map(csvCell).join(',')).join('\n'),'text/csv;charset=utf-8');
-function parseCSV(text){
- const rows=[];let row=[],cell='',quoted=false;
- for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(quoted&&text[i+1]==='"'){cell+='"';i++}else quoted=!quoted}
- else if(c===','&&!quoted){row.push(cell);cell=''}
- else if((c==='\r'||c==='\n')&&!quoted){if(c==='\r'&&text[i+1]==='\n')i++;row.push(cell);if(row.some(v=>v.trim()))rows.push(row);row=[];cell=''}
- else cell+=c}
- if(quoted)throw Error('Niedomknięty cudzysłów w CSV');row.push(cell);if(row.some(v=>v.trim()))rows.push(row);return rows
-}
-$('import-csv').onchange=async e=>{
- const file=e.target.files?.[0];if(!file)return;
- try{
- const rows=parseCSV((await file.text()).replace(/^\uFEFF/,''));if(!rows.length)throw Error('Pusty plik');
- const headers=rows.shift().map(h=>h.trim().toLowerCase());
- for(const key of ['name','lat','lng'])if(!headers.includes(key))throw Error('Brak kolumny '+key);
- let added=0,skipped=0;
- for(const row of rows){const obj=Object.fromEntries(headers.map((h,i)=>[h,row[i]??'']));
- if(!obj.lat?.trim()||!obj.lng?.trim()){skipped++;continue}
- const g=validGym({...obj,id:newid(),lat:Number(obj.lat),lng:Number(obj.lng),popularity:Number(obj.popularity||3)});
- if(!g||data.gyms.some(x=>x.name.toLowerCase()===g.name.toLowerCase()&&C.haversine(x,g)<.015)){skipped++;continue}
- data.gyms.push(g);added++}
- save();clearRoute();draw();alert('Dodano '+added+' Gymów; pominięto '+skipped)
- }catch(err){alert('Błąd CSV: '+err.message)}finally{e.target.value=''}
-};
-
 /* Import adapter: user-provided or explicitly authorized data only. */
 const importer=window.GymPathImport;
 function mergeImportedGyms(parsed, origin){
-  if(!data.start)throw Error('Wskaż najpierw punkt startowy na mapie.');
-  const near=importer.withinRadius(parsed.gyms,data.start,+$('radius').value);
-  let added=0,duplicates=0;
-  for(const item of near){
-    const found=data.gyms.find(g=>C.haversine(g,item)<0.025 && g.name.toLocaleLowerCase('pl')===item.name.toLocaleLowerCase('pl'));
-    if(found){duplicates++;continue}
-    if(data.gyms.length>=3000)throw Error('Osiągnięto limit 3000 Gymów w pamięci. Wyeksportuj kopię lub usuń niepotrzebne punkty.');
-    const g=validGym({...item,id:newid(),source:origin});if(g){data.gyms.push(g);added++}
+  const incoming=parsed.gyms;
+  let added=0, duplicates=0;
+  for(const item of incoming){
+    const matched=data.gyms.find(g=>C.haversine(g,item)<0.025 &&
+      g.name.toLocaleLowerCase('pl')===item.name.toLocaleLowerCase('pl'));
+    if(matched){duplicates++;continue}
+    if(data.gyms.length>=3000){
+      save();clearRoute();draw();
+      throw Error('Limit 3000 Gymów na tym urządzeniu. Dodano '+added+
+        ' punktów przed osiągnięciem limitu. Wyeksportuj kopię JSON.');
+    }
+    const g=validGym({...item,id:newid(),source:origin});
+    if(g){data.gyms.push(g);added++}
   }
   save();clearRoute();draw();
-  const text='Źródło: '+origin+'. Dodano '+added+' Gymów w promieniu '+$('radius').value+' km; pominięto '+duplicates+' duplikatów oraz '+(parsed.gyms.length-near.length)+' punktów spoza promienia.'+(parsed.skipped?' '+parsed.skipped+' wierszy nie rozpoznano jako Gymy.':'');
-  $('import-result').textContent=text;notice('Import zakończony: '+added+' nowych Gymów.');
+  const report='Z pliku '+origin+' dodano '+added+' Gymów; pominięto '+duplicates+
+    ' duplikatów i '+parsed.skipped+' niepoprawnych lub nieoznaczonych punktów.'+
+    ' Zaimportowano dane bez ograniczania promieniem. Łącznie zapisanych Gymów: '+data.gyms.length+'.';
+  $('import-result').textContent=report;
+  notice('Import zakończony: '+added+' nowych Gymów.');
   return added;
 }
 function processGymImport(raw,origin){
-  if(!data.start)throw Error('Najpierw ustaw start na mapie, by filtrować dane w promieniu.');
   const parsed=importer.parseText(raw);
-  if(!parsed.gyms.length)throw Error('Nie znaleziono Gymów. Plik powinien zawierać nazwę i współrzędne, a plik mieszany także oznaczenie type=gym.');
+  if(!parsed.gyms.length)throw Error('Nie znaleziono Gymów. Podaj nazwę i współrzędne. W pliku mieszanym oznacz typ punktu jako gym.');
   return mergeImportedGyms(parsed,origin);
 }
 $('import-pasted').onclick=()=>{
@@ -200,25 +183,6 @@ $('import-geo-file').onchange=async e=>{
   catch(err){$('import-result').textContent='Błąd importu: '+err.message}
   finally{e.target.value=''}
 };
-$('import-source').onclick=async()=>{
-  const btn=$('import-source');if(btn.disabled)return;
-  try{
-    if(!data.start)throw Error('Wskaż punkt startowy na mapie.');
-    const url=importer.sourceUrl($('gym-source-url').value,data.start,+$('radius').value);
-    if(!confirm('Pobrać Gymy z podanego adresu? Korzystaj wyłącznie ze źródeł, które zezwalają na pobieranie ich danych.'))return;
-    btn.disabled=true;$('import-result').textContent='Pobieranie danych z publicznego źródła…';
-    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
-    try{
-      const response=await fetch(url,{method:'GET',credentials:'omit',mode:'cors',referrerPolicy:'no-referrer',signal:controller.signal});
-      if(!response.ok)throw Error('HTTP '+response.status);
-      const length=Number(response.headers.get('content-length'));if(Number.isFinite(length)&&length>8_000_000)throw Error('Plik jest za duży (maks. 8 MB).');
-      const raw=await response.text();if(raw.length>8_000_000)throw Error('Odpowiedź jest za duża (maks. 8 MB).');
-      processGymImport(raw,new URL(url).hostname);
-    }finally{clearTimeout(timer)}
-  }catch(err){$('import-result').textContent='Nie udało się pobrać danych: '+err.message+'. Źródło może nie udostępniać CORS lub nie obsługiwać tego formatu.'}
-  finally{btn.disabled=false}
-};
-
 $('delete-all').onclick=()=>{if(confirm('Usunąć wszystkie zapisane Gymy, historię i punkt startowy? Najpierw rozważ eksport JSON.')){data=defaults();save();clearRoute();draw();$('route-result').textContent='Dane zostały usunięte.'}};
 let installPrompt=null;window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('install').hidden=false});
 $('install').onclick=async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;$('install').hidden=true}};
