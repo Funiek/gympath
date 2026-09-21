@@ -166,6 +166,59 @@ $('import-csv').onchange=async e=>{
  save();clearRoute();draw();alert('Dodano '+added+' Gymów; pominięto '+skipped)
  }catch(err){alert('Błąd CSV: '+err.message)}finally{e.target.value=''}
 };
+
+/* Import adapter: user-provided or explicitly authorized data only. */
+const importer=window.GymPathImport;
+function mergeImportedGyms(parsed, origin){
+  if(!data.start)throw Error('Wskaż najpierw punkt startowy na mapie.');
+  const near=importer.withinRadius(parsed.gyms,data.start,+$('radius').value);
+  let added=0,duplicates=0;
+  for(const item of near){
+    const found=data.gyms.find(g=>C.haversine(g,item)<0.025 && g.name.toLocaleLowerCase('pl')===item.name.toLocaleLowerCase('pl'));
+    if(found){duplicates++;continue}
+    if(data.gyms.length>=3000)throw Error('Osiągnięto limit 3000 Gymów w pamięci. Wyeksportuj kopię lub usuń niepotrzebne punkty.');
+    const g=validGym({...item,id:newid(),source:origin});if(g){data.gyms.push(g);added++}
+  }
+  save();clearRoute();draw();
+  const text='Źródło: '+origin+'. Dodano '+added+' Gymów w promieniu '+$('radius').value+' km; pominięto '+duplicates+' duplikatów oraz '+(parsed.gyms.length-near.length)+' punktów spoza promienia.'+(parsed.skipped?' '+parsed.skipped+' wierszy nie rozpoznano jako Gymy.':'');
+  $('import-result').textContent=text;notice('Import zakończony: '+added+' nowych Gymów.');
+  return added;
+}
+function processGymImport(raw,origin){
+  if(!data.start)throw Error('Najpierw ustaw start na mapie, by filtrować dane w promieniu.');
+  const parsed=importer.parseText(raw);
+  if(!parsed.gyms.length)throw Error('Nie znaleziono Gymów. Plik powinien zawierać nazwę i współrzędne, a plik mieszany także oznaczenie type=gym.');
+  return mergeImportedGyms(parsed,origin);
+}
+$('import-pasted').onclick=()=>{
+  try{processGymImport($('paste-gyms').value,'wklejone dane');}
+  catch(e){$('import-result').textContent='Błąd importu: '+e.message}
+};
+$('import-geo-file').onchange=async e=>{
+  const file=e.target.files?.[0];if(!file)return;
+  try{if(file.size>8_000_000)throw Error('Plik jest za duży (maks. 8 MB).');processGymImport(await file.text(),file.name);}
+  catch(err){$('import-result').textContent='Błąd importu: '+err.message}
+  finally{e.target.value=''}
+};
+$('import-source').onclick=async()=>{
+  const btn=$('import-source');if(btn.disabled)return;
+  try{
+    if(!data.start)throw Error('Wskaż punkt startowy na mapie.');
+    const url=importer.sourceUrl($('gym-source-url').value,data.start,+$('radius').value);
+    if(!confirm('Pobrać Gymy z podanego adresu? Korzystaj wyłącznie ze źródeł, które zezwalają na pobieranie ich danych.'))return;
+    btn.disabled=true;$('import-result').textContent='Pobieranie danych z publicznego źródła…';
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+    try{
+      const response=await fetch(url,{method:'GET',credentials:'omit',mode:'cors',referrerPolicy:'no-referrer',signal:controller.signal});
+      if(!response.ok)throw Error('HTTP '+response.status);
+      const length=Number(response.headers.get('content-length'));if(Number.isFinite(length)&&length>8_000_000)throw Error('Plik jest za duży (maks. 8 MB).');
+      const raw=await response.text();if(raw.length>8_000_000)throw Error('Odpowiedź jest za duża (maks. 8 MB).');
+      processGymImport(raw,new URL(url).hostname);
+    }finally{clearTimeout(timer)}
+  }catch(err){$('import-result').textContent='Nie udało się pobrać danych: '+err.message+'. Źródło może nie udostępniać CORS lub nie obsługiwać tego formatu.'}
+  finally{btn.disabled=false}
+};
+
 $('delete-all').onclick=()=>{if(confirm('Usunąć wszystkie zapisane Gymy, historię i punkt startowy? Najpierw rozważ eksport JSON.')){data=defaults();save();clearRoute();draw();$('route-result').textContent='Dane zostały usunięte.'}};
 let installPrompt=null;window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('install').hidden=false});
 $('install').onclick=async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;$('install').hidden=true}};
