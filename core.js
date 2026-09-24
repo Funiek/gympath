@@ -78,5 +78,5 @@
     }
     return coordinates;
   }
-  return {haversine,isCoord,defenseHours,gymValue,inRadius,plan,decodePolyline6};
+  return {haversine,isCoord,clamp,defenseHours,gymValue,inRadius,plan,decodePolyline6};
 });
